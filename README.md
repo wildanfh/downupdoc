@@ -1,18 +1,18 @@
 # Moodle → Google Drive Auto-Sync
 
-Script Python untuk otomatis download semua materi dari Moodle dan upload ke Google Drive, terorganisir per section dan modul seperti struktur di Moodle.
+Automatically downloads all course materials from Moodle and uploads them to Google Drive, organized by section and module — mirroring the exact structure in Moodle.
 
 ---
 
-## Prasyarat
+## Requirements
 
 - Python 3.10+
-- Akun Google dengan Google Drive API aktif
-- Akun Moodle yang bisa login via username/password (bukan SSO eksternal)
+- Google account with Google Drive API enabled
+- Moodle account with username/password login (not external SSO)
 
 ---
 
-## Setup (Lakukan Sekali)
+## Setup (One-time)
 
 ### 1. Install dependencies
 
@@ -20,99 +20,99 @@ Script Python untuk otomatis download semua materi dari Moodle dan upload ke Goo
 pip install -r requirements.txt
 ```
 
-### 2. Buat credentials.json dari Google Cloud Console
+### 2. Create credentials.json from Google Cloud Console
 
-1. Buka [https://console.cloud.google.com](https://console.cloud.google.com)
-2. Buat project baru → beri nama (misal: `moodle-sync`)
-3. Di sidebar → **APIs & Services** → **Library**
-4. Cari **Google Drive API** → klik **Enable**
-5. Pergi ke **APIs & Services** → **OAuth consent screen**
-   - User Type: **External** → klik Create
-   - Isi App name, User support email, Developer contact email → Save
-   - Di bagian **Test users** → klik **Add users** → masukkan email Google kamu → Save
-6. Pergi ke **APIs & Services** → **Credentials**
-   - Klik **+ Create Credentials** → pilih **OAuth client ID**
-   - Application type: **Desktop app** → beri nama → klik **Create**
-   - Klik **Download JSON** pada credential yang baru dibuat
-7. Rename file hasil download menjadi `credentials.json`
-8. Taruh `credentials.json` di folder yang sama dengan `moodle_sync.py`
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com)
+2. Create a new project (e.g. `moodle-sync`)
+3. Sidebar → **APIs & Services** → **Library**
+4. Search **Google Drive API** → click **Enable**
+5. Go to **APIs & Services** → **OAuth consent screen**
+   - User Type: **External** → click Create
+   - Fill in App name, User support email, Developer contact email → Save
+   - Under **Test users** → click **Add users** → enter your Google email → Save
+6. Go to **APIs & Services** → **Credentials**
+   - Click **+ Create Credentials** → **OAuth client ID**
+   - Application type: **Desktop app** → give it a name → click **Create**
+   - Click **Download JSON** on the newly created credential
+7. Rename the downloaded file to `credentials.json`
+8. Place `credentials.json` in the same folder as `moodle_sync.py`
 
-> **Kenapa perlu tambah Test users?**  
-> App OAuth yang belum diverifikasi Google hanya bisa dipakai oleh email yang didaftarkan sebagai test user. Kalau dilewati, akan muncul error 403 saat authorize.
+> **Why add Test users?**  
+> Unverified OAuth apps can only be used by emails registered as test users. Skipping this step will result in a 403 error during authorization.
 
-### 3. Edit konfigurasi di script
+### 3. Configure the script
 
-Buka `moodle_sync.py`, edit bagian ini:
+Open `moodle_sync.py` and edit this section:
 
 ```python
-MOODLE_URL          = "https://elearning.sekolah.ac.id"  # URL Moodle sekolahmu
-USERNAME            = "username_kamu"
-PASSWORD            = "password_kamu"
-GDRIVE_FOLDER_NAME  = "Materi Sekolah"                   # Nama folder di Drive
+MOODLE_URL          = "https://elearning.yourschool.edu"  # Your Moodle URL
+USERNAME            = "your_username"
+PASSWORD            = "your_password"
+GDRIVE_FOLDER_NAME  = "Course Materials"                  # Root folder name in Drive
 ```
 
 ---
 
-## Cara Pakai
+## Usage
 
 ```bash
 python3 moodle_sync.py
 ```
 
-- **Pertama kali**: browser terbuka untuk authorize Google Drive → izinkan akses → token disimpan di `token.pickle`
-- **Selanjutnya**: otomatis tanpa buka browser
-- **Sync berikutnya**: file yang sudah ada di Drive di-skip, hanya file baru yang diupload
+- **First run**: a browser window opens for Google Drive authorization → allow access → token saved to `token.pickle`
+- **Subsequent runs**: fully automatic, no browser needed
+- **Incremental sync**: files already in Drive are skipped — only new files get uploaded
 
 ---
 
-## Struktur Folder di Google Drive
+## Google Drive Folder Structure
 
-Folder dibuat otomatis mengikuti struktur Moodle:
+Folders are created automatically to mirror Moodle:
 
 ```
-Materi Sekolah/
-├── Nama Course/
-│   ├── Nama Section/
-│   │   ├── Nama Modul/
+Course Materials/
+├── Course Name/
+│   ├── Section Name/
+│   │   ├── Module Name/
 │   │   │   ├── file.pdf
-│   │   │   └── materi.pptx
-│   │   └── Modul Lain/
-│   │       └── tugas.docx
-│   └── Section Lain/
+│   │   │   └── slides.pptx
+│   │   └── Another Module/
+│   │       └── assignment.docx
+│   └── Another Section/
 │       └── ...
-└── Course Lain/
+└── Another Course/
     └── ...
 ```
 
 ---
 
-## Opsi Konfigurasi
+## Configuration Options
 
-| Variabel | Default | Keterangan |
+| Variable | Default | Description |
 |---|---|---|
-| `SKIP_EXISTING` | `True` | Skip file yang sudah ada di Drive (incremental sync) |
-| `DOWNLOAD_DIR` | `./downloads` | Folder lokal sementara sebelum upload |
+| `SKIP_EXISTING` | `True` | Skip files already in Drive (incremental sync) |
+| `DOWNLOAD_DIR` | `./downloads` | Local temp folder before upload |
 
 ---
 
-## Jalankan Otomatis (Opsional)
+## Automate with Cron (Optional)
 
-Pakai cron (Linux/Mac) — contoh tiap hari jam 07.00:
+Example: run every day at 7:00 AM:
 
 ```bash
 crontab -e
-# Tambahkan baris ini:
-0 7 * * * cd /path/ke/folder && PYTHONUNBUFFERED=1 python3 moodle_sync.py >> sync.log 2>&1
+# Add this line:
+0 7 * * * cd /path/to/folder && PYTHONUNBUFFERED=1 python3 moodle_sync.py >> sync.log 2>&1
 ```
 
 ---
 
 ## Troubleshooting
 
-| Error | Solusi |
+| Error | Solution |
 |---|---|
-| `Login gagal` | Cek USERNAME/PASSWORD. Pastikan login bisa dilakukan via form biasa, bukan SSO/LDAP eksternal |
-| `credentials.json not found` | Pastikan file ada di folder yang sama dengan script |
-| Error 403 saat OAuth | Tambahkan email Google kamu sebagai Test user di OAuth consent screen (lihat langkah 5 setup) |
-| File tidak terdownload | Resource bertipe `url` (link eksternal) atau `forum` memang dilewati — hanya file yang bisa didownload yang disync |
-| `token.pickle` expired | Hapus file `token.pickle`, jalankan ulang script, authorize ulang di browser |
+| `Login failed` | Check USERNAME/PASSWORD. Make sure login works via the standard form, not external SSO/LDAP |
+| `credentials.json not found` | Make sure the file is in the same folder as the script |
+| 403 error during OAuth | Add your Google email as a Test user in the OAuth consent screen (see step 5 above) |
+| File not downloaded | Resources of type `url` (external links) or `forum` are skipped — only downloadable files are synced |
+| `token.pickle` expired | Delete `token.pickle`, re-run the script, and re-authorize in the browser |
