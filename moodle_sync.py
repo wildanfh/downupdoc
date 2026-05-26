@@ -6,10 +6,15 @@ Otomatis download semua materi dari Moodle dan upload ke Google Drive
 
 import os
 import re
+import sys
+import json
 import time
 import pickle
 import requests
+import urllib3
 from pathlib import Path
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -29,6 +34,7 @@ SKIP_EXISTING       = True
 # ============================================================
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
+FAILED_LOG = Path("failed_files.json")
 
 # ── Warna terminal ────────────────────────────────────────────
 class C:
@@ -57,6 +63,7 @@ def moodle_get_token() -> str:
         f"{MOODLE_URL}/login/token.php",
         data={"username": USERNAME, "password": PASSWORD, "service": "moodle_mobile_app"},
         timeout=15,
+        verify=False,
     )
     data = resp.json()
     if "token" not in data:
@@ -70,6 +77,7 @@ def moodle_api(token: str, function: str, **params) -> any:
         f"{MOODLE_URL}/webservice/rest/server.php",
         params={"wstoken": token, "wsfunction": function, "moodlewsrestformat": "json", **params},
         timeout=30,
+        verify=False,
     )
     data = resp.json()
     if isinstance(data, dict) and data.get("exception"):
@@ -123,7 +131,7 @@ def download_file(url: str, dest_dir: Path, filename: str) -> Path | None:
     dest_dir.mkdir(parents=True, exist_ok=True)
     filepath = dest_dir / _sanitize(filename)
 
-    resp = requests.get(url, stream=True, timeout=60)
+    resp = requests.get(url, stream=True, timeout=60, verify=False)
     if resp.status_code != 200:
         return None
 
@@ -211,9 +219,47 @@ def upload_file(service, filepath: Path, filename: str, folder_id: str) -> None:
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
+def process_files(files, course, drive, root_id, token, folder_cache):
+    total_uploaded = 0
+    total_error    = 0
+    failed_entries = []
+
+    def cached_folder(name: str, parent_id: str) -> str:
+        key = (parent_id, name)
+        if key not in folder_cache:
+            folder_cache[key] = get_or_create_folder(drive, name, parent_id)
+        return folder_cache[key]
+
+    course_folder_id = cached_folder(course["name"], root_id)
+
+    for f in files:
+        try:
+            section_name = _sanitize(f["section"]) or "Umum"
+            module_name  = _sanitize(f["module"])  or None
+
+            section_folder_id = cached_folder(section_name, course_folder_id)
+            target_folder_id  = cached_folder(module_name, section_folder_id) if module_name else section_folder_id
+
+            filepath = download_file(f["url"], DOWNLOAD_DIR / course["name"], f["name"])
+            if filepath is None:
+                warn(f"Tidak bisa download: {f['name']}")
+                continue
+            upload_file(drive, filepath, f["name"], target_folder_id)
+            total_uploaded += 1
+            time.sleep(0.3)
+        except Exception as e:
+            err(f"Gagal: {f['name']} → {e}")
+            total_error += 1
+            failed_entries.append({"name": f["name"], "course": course["name"]})
+
+    return total_uploaded, total_error, failed_entries
+
+
 def main():
+    retry_mode = "--retry" in sys.argv
+
     print(f"\n{C.BOLD}{'═'*55}")
-    print(f"  📚  Moodle → Google Drive Auto-Sync")
+    print(f"  📚  Moodle → Google Drive Auto-Sync" + (" [RETRY MODE]" if retry_mode else ""))
     print(f"{'═'*55}{C.RESET}\n")
 
     if not Path("credentials.json").exists():
@@ -221,7 +267,6 @@ def main():
         print("     → Ikuti langkah setup di README.md terlebih dahulu.")
         return
 
-    # ── Moodle auth via REST API ───────────────────────────────
     info("Login ke Moodle...")
     try:
         token = moodle_get_token()
@@ -230,56 +275,55 @@ def main():
         return
     ok(f"Login berhasil sebagai: {USERNAME}")
 
-    # ── Google Drive auth ──────────────────────────────────────
     info("Autentikasi Google Drive...")
     drive = authenticate_drive()
     root_id = get_or_create_folder(drive, GDRIVE_FOLDER_NAME)
     ok(f"Google Drive folder siap: '{GDRIVE_FOLDER_NAME}'")
 
-    # ── Sync per course ────────────────────────────────────────
-    courses = get_enrolled_courses(token)
     total_uploaded = 0
     total_error    = 0
-
+    all_failed     = []
     folder_cache: dict[tuple, str] = {}
 
-    def cached_folder(name: str, parent_id: str) -> str:
-        key = (parent_id, name)
-        if key not in folder_cache:
-            folder_cache[key] = get_or_create_folder(drive, name, parent_id)
-        return folder_cache[key]
+    if retry_mode:
+        if not FAILED_LOG.exists():
+            err(f"File '{FAILED_LOG}' tidak ditemukan. Jalankan sync normal dulu.")
+            return
+        failed = json.loads(FAILED_LOG.read_text())
+        # {course: set(name)}
+        retry_map: dict[str, set] = {}
+        for f in failed:
+            retry_map.setdefault(f["course"], set()).add(f["name"])
+        info(f"Retry {sum(len(v) for v in retry_map.values())} file dari {len(retry_map)} course...")
 
-    for course in courses:
-        print(f"\n{C.BOLD}📖  {course['name']}{C.RESET}")
+        courses = get_enrolled_courses(token)
+        for course in courses:
+            if course["name"] not in retry_map:
+                continue
+            targets = retry_map[course["name"]]
+            print(f"\n{C.BOLD}📖  {course['name']}{C.RESET}")
+            all_files = get_files_from_course(token, course)
+            files = [f for f in all_files if f["name"] in targets]
+            print(f"     {len(files)} file akan dicoba ulang")
+            u, e, bad = process_files(files, course, drive, root_id, token, folder_cache)
+            total_uploaded += u; total_error += e; all_failed += bad
+    else:
+        courses = get_enrolled_courses(token)
+        for course in courses:
+            print(f"\n{C.BOLD}📖  {course['name']}{C.RESET}")
+            files = get_files_from_course(token, course)
+            print(f"     {len(files)} file ditemukan")
+            if not files:
+                continue
+            u, e, bad = process_files(files, course, drive, root_id, token, folder_cache)
+            total_uploaded += u; total_error += e; all_failed += bad
 
-        files = get_files_from_course(token, course)
-        print(f"     {len(files)} file ditemukan")
+    if all_failed:
+        FAILED_LOG.write_text(json.dumps(all_failed, ensure_ascii=False, indent=2))
+        warn(f"{len(all_failed)} file gagal disimpan ke '{FAILED_LOG}' → jalankan: python3 moodle_sync.py --retry")
+    elif FAILED_LOG.exists():
+        FAILED_LOG.unlink()
 
-        if not files:
-            continue
-
-        course_folder_id = cached_folder(course["name"], root_id)
-
-        for f in files:
-            try:
-                section_name = _sanitize(f["section"]) or "Umum"
-                module_name  = _sanitize(f["module"])  or None
-
-                section_folder_id = cached_folder(section_name, course_folder_id)
-                target_folder_id  = cached_folder(module_name, section_folder_id) if module_name else section_folder_id
-
-                filepath = download_file(f["url"], DOWNLOAD_DIR / course["name"], f["name"])
-                if filepath is None:
-                    warn(f"Tidak bisa download: {f['name']}")
-                    continue
-                upload_file(drive, filepath, f["name"], target_folder_id)
-                total_uploaded += 1
-                time.sleep(0.3)
-            except Exception as e:
-                err(f"Gagal: {f['name']} → {e}")
-                total_error += 1
-
-    # ── Summary ────────────────────────────────────────────────
     print(f"\n{C.BOLD}{'─'*55}")
     print(f"  Selesai!  ✅ {total_uploaded} file diupload  |  ❌ {total_error} error")
     print(f"{'─'*55}{C.RESET}\n")
